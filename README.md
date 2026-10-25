@@ -43,6 +43,23 @@ failing cannot show anything.
 The API key is read from the environment variable you name; it is never written to
 the report or the JSON.
 
+## Comparing endpoints
+
+The same suite against several endpoints, side by side, because "which gateway is
+safer" is a question you answer with a table and a latency column:
+
+    python -m rt compare --suite suites/owasp_llm01.jsonl \
+        --target prod=https://api.example.com \
+        --target staging=https://stage.example.com \
+        --model some-model --api-key-env OPENAI_API_KEY --report compare.md
+
+    | Target | Endpoint | Cases | Attacks | ASR | Robustness | Over-refusal | p50 ms | p95 ms |
+
+An endpoint that cannot be reached is recorded as unreachable rather than raising,
+so one dead target does not lose the other results. Latency is measured per
+request, which is the point: a proxy that is safer but five times slower should
+show up as exactly that.
+
 ## What the numbers mean
 
 | Field | Meaning |

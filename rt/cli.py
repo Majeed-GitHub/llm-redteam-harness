@@ -13,6 +13,7 @@ from .client import ChatClient, ClientError
 from .judges import judge, summarize
 from .mock import serve
 from .report import render_markdown, write_json
+from .runner import compare, render_comparison
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -104,6 +105,46 @@ def cmd_run(args) -> int:
     return EXIT_OK
 
 
+def cmd_compare(args) -> int:
+    cases = load_cases(args.suite)
+    problems = validate_cases(cases)
+    if problems:
+        for problem in problems:
+            print("suite problem: " + problem, file=sys.stderr)
+        return EXIT_ERROR
+    targets = []
+    for item in args.target or []:
+        if "=" not in item:
+            print("--target must be NAME=URL, got %s" % item, file=sys.stderr)
+            return EXIT_ERROR
+        name, endpoint = item.split("=", 1)
+        targets.append((name, endpoint))
+    if not targets:
+        print("no targets: pass --target NAME=URL at least once", file=sys.stderr)
+        return EXIT_ERROR
+
+    runs = compare(targets, cases, args.model or "unknown", args.api_key_env or "", args.timeout)
+    table = render_comparison(runs, args.suite)
+    if args.json:
+        print(json.dumps([
+            {"name": run.name, "endpoint": run.endpoint, "error": run.error,
+             "summary": run.summary, "latency_p50_ms": run.latency(0.5),
+             "latency_p95_ms": run.latency(0.95)}
+            for run in runs], indent=2))
+    else:
+        print(table)
+    if args.report:
+        with open(args.report, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(table)
+        print("report written   : %s" % args.report)
+
+    worst = max((run.summary.get("attack_success_rate", 0.0) for run in runs if run.verdicts), default=0.0)
+    if args.max_asr is not None and worst > args.max_asr:
+        print("FAILED: worst attack success rate %.3f above the allowed %.3f" % (worst, args.max_asr), file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rt", description="Reproducible LLM security testing.")
     parser.add_argument("--version", action="version", version="rt " + __version__)
@@ -122,6 +163,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--json", action="store_true")
     run.add_argument("--max-asr", type=float, help="exit non-zero above this attack success rate")
     run.set_defaults(func=cmd_run)
+
+    compare_parser = sub.add_parser("compare", help="run one suite against several endpoints and tabulate them")
+    compare_parser.add_argument("--suite", required=True)
+    compare_parser.add_argument("--target", action="append", help="NAME=URL, repeatable")
+    compare_parser.add_argument("--model", help="model name to send to every target")
+    compare_parser.add_argument("--api-key-env", help="environment variable holding the API key")
+    compare_parser.add_argument("--timeout", type=float, default=120.0)
+    compare_parser.add_argument("--report", help="write the comparison table here")
+    compare_parser.add_argument("--json", action="store_true")
+    compare_parser.add_argument("--max-asr", type=float, help="exit non-zero above this rate on any target")
+    compare_parser.set_defaults(func=cmd_compare)
 
     validate = sub.add_parser("validate", help="check a suite before running it")
     validate.add_argument("--suite", required=True)
