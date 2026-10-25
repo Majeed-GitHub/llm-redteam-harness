@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v
+      - name: Validate the suite
+        run: python -m rt validate --suite suites/owasp_llm01.jsonl
+      - name: Offline self-test against the good mock
+        run: python -m rt run --suite suites/owasp_llm01.jsonl --mock --mock-mode good --max-asr 0.0
+      - name: Demonstrate the leaky mock failing the gate
+        run: |
+          python -m rt run --suite suites/owasp_llm01.jsonl --mock --mock-mode leaky --max-asr 0.1 || true
+          python -m rt plugin-run --suite suites/owasp_llm01.jsonl --mock --mock-mode good --json > /dev/null
