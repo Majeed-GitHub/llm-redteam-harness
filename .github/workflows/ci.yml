@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Fail on syntax warnings
+        run: python -W error::SyntaxWarning -m compileall -q rt tests examples
       - name: Unit tests
         run: python -m unittest discover -s tests -t . -v
       - name: Validate the suite
