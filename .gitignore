@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+*.md.tmp
+report.md
+result.json
