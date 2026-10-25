@@ -13,6 +13,7 @@ from .client import ChatClient, ClientError
 from .judges import judge, summarize
 from .mock import serve
 from .report import render_markdown, write_json
+from .plugin import plugin_manifest, plugin_run
 from .runner import compare, render_comparison
 
 EXIT_OK = 0
@@ -145,6 +146,25 @@ def cmd_compare(args) -> int:
     return EXIT_OK
 
 
+def cmd_plugin_manifest(args) -> int:
+    print(json.dumps(plugin_manifest(), indent=2))
+    return EXIT_OK
+
+
+def cmd_plugin_run(args) -> int:
+    result = plugin_run(args.suite, endpoint=args.endpoint, model=args.model or "unknown",
+                        api_key_env=args.api_key_env or "", mock=args.mock,
+                        mock_mode=args.mock_mode, timeout=args.timeout, report_path=args.report)
+    print(json.dumps(result, indent=2))
+    if not result.get("ok"):
+        print("run failed: " + str(result.get("error")), file=sys.stderr)
+        return EXIT_ERROR
+    if args.max_asr is not None and result["summary"]["attack_success_rate"] > args.max_asr:
+        print("FAILED: attack success rate above the allowed threshold", file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rt", description="Reproducible LLM security testing.")
     parser.add_argument("--version", action="version", version="rt " + __version__)
@@ -174,6 +194,21 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("--json", action="store_true")
     compare_parser.add_argument("--max-asr", type=float, help="exit non-zero above this rate on any target")
     compare_parser.set_defaults(func=cmd_compare)
+
+    plugin_manifest_parser = sub.add_parser("plugin-manifest", help="describe the plugin for a host")
+    plugin_manifest_parser.set_defaults(func=cmd_plugin_manifest)
+
+    plugin_run_parser = sub.add_parser("plugin-run", help="one evaluation, shaped for a host to render")
+    plugin_run_parser.add_argument("--suite", required=True)
+    plugin_run_parser.add_argument("--endpoint")
+    plugin_run_parser.add_argument("--model")
+    plugin_run_parser.add_argument("--api-key-env")
+    plugin_run_parser.add_argument("--mock", action="store_true")
+    plugin_run_parser.add_argument("--mock-mode", choices=["good", "leaky"], default="good")
+    plugin_run_parser.add_argument("--timeout", type=float, default=120.0)
+    plugin_run_parser.add_argument("--report")
+    plugin_run_parser.add_argument("--max-asr", type=float)
+    plugin_run_parser.set_defaults(func=cmd_plugin_run)
 
     validate = sub.add_parser("validate", help="check a suite before running it")
     validate.add_argument("--suite", required=True)
