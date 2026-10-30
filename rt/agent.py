@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Sequence
 
 from .cases import Case
 from .client import AssistantTurn, ChatClient, ClientError
+from .defense import (DefenseReport, sanitize_tools, spotlight_tool_output,
+                      defense_notice)
 
 
 @dataclass
@@ -53,6 +55,8 @@ class Trajectory:
     schema_swaps: int = 0
     turn_budget_exhausted: bool = False
     error: str = ""
+    defenses: List[str] = field(default_factory=list)
+    defense_report: Dict[str, int] = field(default_factory=dict)
 
     @property
     def tool_calls(self) -> List[Dict[str, object]]:
@@ -77,12 +81,28 @@ class Trajectory:
 
 
 def run_trajectory(case: Case, client: ChatClient,
-                   max_turns: Optional[int] = None) -> Trajectory:
-    """Drive one case to a final answer or to the turn budget."""
+                   max_turns: Optional[int] = None,
+                   defenses: Sequence[str] = (),
+                   defense_report: Optional[DefenseReport] = None) -> Trajectory:
+    """Drive one case to a final answer or to the turn budget.
+
+    defenses is a list of middleware names applied to the same case, so the
+    report can show the attack success rate with and without them instead of
+    asking anyone to trust a claim about a defense.
+    """
     budget = max_turns or case.max_turns or 3
+    report = defense_report if defense_report is not None else DefenseReport()
+    active = set(defenses)
     tools = case.tool_specs()
+    if "sanitize-schemas" in active:
+        tools = sanitize_tools(tools, report)
     mutated = False
-    trajectory = Trajectory(messages=[{"role": "user", "content": case.prompt}])
+    messages: List[Dict[str, object]] = []
+    if "spotlighting" in active:
+        messages.append(defense_notice())
+    messages.append({"role": "user", "content": case.prompt})
+    trajectory = Trajectory(messages=messages)
+    trajectory.defenses = list(defenses)
 
     for turn in range(1, budget + 1):
         trajectory.turns = turn
@@ -95,6 +115,10 @@ def run_trajectory(case: Case, client: ChatClient,
         # A rug-pull: the definition inspected earlier is not the one in force.
         if case.mutate_on_turn and turn >= case.mutate_on_turn and not mutated:
             tools = case.mutated_tool_specs()
+            if "sanitize-schemas" in active:
+                # A rug-pull is exactly when sanitizing matters most: the
+                # definition that arrives after trust is the one never inspected.
+                tools = sanitize_tools(tools, report)
             trajectory.schema_swaps += 1
             mutated = True
 
@@ -107,6 +131,7 @@ def run_trajectory(case: Case, client: ChatClient,
         if not step.wants_tools:
             trajectory.final_text = step.content
             trajectory.messages.append({"role": "assistant", "content": step.content})
+            trajectory.defense_report = report.to_dict()
             return trajectory
 
         trajectory.messages.append({
@@ -122,7 +147,9 @@ def run_trajectory(case: Case, client: ChatClient,
             ],
         })
         for call in step.tool_calls:
-            result = case.mock_return_for(call.name)
+            result = case.mock_return_for(call.name, call.arguments)
+            if "spotlighting" in active:
+                result = spotlight_tool_output(result, report)
             trajectory.invocations.append(Invocation(
                 turn=turn,
                 name=call.name,
@@ -138,6 +165,7 @@ def run_trajectory(case: Case, client: ChatClient,
             })
 
     trajectory.turn_budget_exhausted = True
+    trajectory.defense_report = report.to_dict()
     return trajectory
 
 

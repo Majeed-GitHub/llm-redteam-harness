@@ -12,6 +12,7 @@ from typing import Dict, List, Sequence, Tuple
 
 from .agent import run_trajectory
 from .cases import Case
+from .defense import DefenseReport
 from .client import ChatClient, ClientError
 from .judges import Verdict, judge, summarize
 from .scoring import score_trajectory
@@ -54,7 +55,7 @@ def run_suite(cases: Sequence[Case], client: ChatClient, name: str = "target") -
 
 
 def run_agent_suite(cases: Sequence[Case], client: ChatClient,
-                    name: str = "target") -> Run:
+                    name: str = "target", defenses: Sequence[str] = ()) -> Run:
     """Run a tool-using suite: each case becomes a conversation, not a prompt.
 
     Latency is recorded per model turn rather than per case, because a case with
@@ -64,7 +65,7 @@ def run_agent_suite(cases: Sequence[Case], client: ChatClient,
     run = Run(name=name, endpoint=client.endpoint, model=client.model)
     for case in cases:
         started = time.perf_counter()
-        trajectory = run_trajectory(case, client)
+        trajectory = run_trajectory(case, client, defenses=defenses)
         run.latencies_ms.append((time.perf_counter() - started) * 1000)
         if trajectory.error:
             run.error = trajectory.error

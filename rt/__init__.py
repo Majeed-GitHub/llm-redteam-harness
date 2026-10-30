@@ -17,7 +17,7 @@ from .client import ChatClient, ClientError
 from .judges import Verdict, judge, summarize
 from .report import render_junit, render_markdown, write_json
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Case",

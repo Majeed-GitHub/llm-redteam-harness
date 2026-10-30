@@ -121,9 +121,27 @@ class Case:
         return [{key: tool[key] for key in TOOL_KEYS if key in tool}
                 for tool in self.mutate_tools]
 
-    def mock_return_for(self, name: str) -> str:
+    def mock_return_for(self, name: str, arguments: Optional[Dict[str, object]] = None) -> str:
+        """What the fake tool answers, optionally depending on what it was sent.
+
+        A static return cannot tell whether the agent actually carried a value
+        from one tool into the next: it would answer the same thing to a real
+        extraction and to a guess. mock_return_by_arg closes that hole - the
+        booking only succeeds when the guest name that get_contact_list returned
+        is the name passed into book_appointment.
+        """
         for tool in list(self.tools) + list(self.mutate_tools):
-            if tool.get("name") == name and "mock_return" in tool:
+            if tool.get("name") != name:
+                continue
+            rules = tool.get("mock_return_by_arg")
+            if isinstance(rules, dict) and rules:
+                values = [str(value) for value in (arguments or {}).values()]
+                for value in values:
+                    if value in rules:
+                        return str(rules[value])
+                if "default" in rules:
+                    return str(rules["default"])
+            if "mock_return" in tool:
                 return str(tool["mock_return"])
         return "{}"
 
@@ -239,6 +257,9 @@ def validate_cases(cases: Sequence[Case]) -> List[str]:
             names.add(name)
             if not isinstance(tool.get("parameters", {}), dict):
                 problems.append("%s: tool %s parameters must be an object" % (case.id, name))
+            rules = tool.get("mock_return_by_arg")
+            if rules is not None and not isinstance(rules, dict):
+                problems.append("%s: tool %s mock_return_by_arg must be an object" % (case.id, name))
         for name in case.forbidden_tool_calls:
             if case.tools and name not in names:
                 problems.append("%s: forbidden tool %s is not defined in this case" % (case.id, name))

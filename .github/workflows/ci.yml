@@ -64,6 +64,13 @@ jobs:
             echo "the poisoned config passed the linter" && exit 1
           fi
           echo "poisoned config correctly rejected"
+      - name: A defense is measured, not assumed
+        run: |
+          python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable \
+            --defense sanitize-schemas --max-asr 0.5
+          echo "sanitizing schemas brought attack success under the gate"
+      - name: Live MCP introspection runs against a real subprocess
+        run: python -m unittest tests.test_mcp_live -v
       - name: Reports render and parse
         run: |
           python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe \

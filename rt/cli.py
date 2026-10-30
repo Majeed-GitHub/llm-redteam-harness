@@ -10,6 +10,7 @@ from typing import List, Optional
 from . import __version__
 from .cases import load_cases, summarise_cases, validate_cases
 from .client import ChatClient, ClientError
+from .defense import validate_defenses
 from .judges import judge, summarize
 from .mock import serve
 from .report import render_junit, render_markdown, write_json
@@ -32,27 +33,90 @@ def _write_text(path: str, text: str) -> None:
 SEVERITY_ORDER = {"medium": 1, "high": 2, "critical": 3}
 
 
+def _lint_and_report(tools, label, args, findings, problems) -> None:
+    """Lint one tool surface and fold the results into the run."""
+    from .mcp_lint import lint_tools
+
+    findings.extend(lint_tools(tools))
+    if args.json:
+        return
+    print("MCP tool surface : %s" % label)
+    print("tools            : %d" % len(tools))
+
+
 def cmd_scan_mcp(args) -> int:
     """Lint MCP tool definitions without spending a single model token.
 
-    The cheap check people actually run in a pull request: imperative text in a
-    description, instructions in a parameter default, hidden unicode, a tool
-    that redirects to a sibling, and schema drift against a pinned lockfile.
+    Accepts a file, a runnable server command, a client config, or a live URL:
+    the static checks are the same, and the point is to run them against what the
+    developer's client actually sees, not only against a file in the repo.
     """
     from .mcp_lint import diff_lockfile, lint_tools, load_tools
 
-    try:
-        tools, problems = load_tools(args.path)
-    except (OSError, ValueError) as exc:
-        print("cannot read %s: %s" % (args.path, exc), file=sys.stderr)
-        return EXIT_ERROR
-    for problem in problems:
-        print("problem: " + problem, file=sys.stderr)
-    if not tools:
-        print("no tool definitions found in %s" % args.path, file=sys.stderr)
+    findings = []
+    problems = []
+    sources = []
+
+    if args.config:
+        from .mcp_live import list_tools_http, list_tools_stdio, load_config
+        try:
+            servers = load_config(args.config)
+        except (OSError, ValueError) as exc:
+            print("cannot read %s: %s" % (args.config, exc), file=sys.stderr)
+            return EXIT_ERROR
+        for name, spec in servers:
+            try:
+                if isinstance(spec, str):
+                    tools = list_tools_http(spec, timeout=args.timeout)
+                else:
+                    tools = list_tools_stdio(spec, timeout=args.timeout)
+            except Exception as exc:
+                print("server %s: %s" % (name, exc), file=sys.stderr)
+                problems.append("%s: %s" % (name, exc))
+                continue
+            sources.append((name, tools))
+    elif args.cmd:
+        from .mcp_live import list_tools_stdio
+        # The string goes straight to the module: its splitter keeps Windows
+        # backslashes, while shlex's POSIX mode treats them as escapes and
+        # turned C:path into C:path on the first attempt.
+        try:
+            sources.append((args.cmd, list_tools_stdio(args.cmd, timeout=args.timeout)))
+        except Exception as exc:
+            print("cannot introspect %s: %s" % (args.cmd, exc), file=sys.stderr)
+            return EXIT_ERROR
+    elif args.url:
+        from .mcp_live import list_tools_http
+        try:
+            sources.append((args.url, list_tools_http(args.url, timeout=args.timeout)))
+        except Exception as exc:
+            print("cannot introspect %s: %s" % (args.url, exc), file=sys.stderr)
+            return EXIT_ERROR
+    elif args.path:
+        try:
+            tools, problems = load_tools(args.path)
+        except (OSError, ValueError) as exc:
+            print("cannot read %s: %s" % (args.path, exc), file=sys.stderr)
+            return EXIT_ERROR
+        sources.append((args.path, tools))
+    else:
+        print("nothing to scan: pass a path, --cmd, --config or --url", file=sys.stderr)
         return EXIT_ERROR
 
-    findings = lint_tools(tools)
+    for problem in problems:
+        print("problem: " + problem, file=sys.stderr)
+
+    total_tools = 0
+    for label, tools in sources:
+        total_tools += len(tools)
+        if not tools:
+            print("no tool definitions in %s" % label, file=sys.stderr)
+            continue
+        if not args.json:
+            print("MCP tool surface : %s" % label)
+            print("tools            : %d" % len(tools))
+        findings.extend(lint_tools(tools))
+
     if args.lockfile:
         try:
             with open(args.lockfile, "r", encoding="utf-8") as handle:
@@ -65,19 +129,18 @@ def cmd_scan_mcp(args) -> int:
         if not isinstance(lock, dict):
             print("lockfile must hold a tool-hash map", file=sys.stderr)
             return EXIT_ERROR
-        findings = findings + diff_lockfile(tools, lock)
+        for _, tools in sources:
+            findings.extend(diff_lockfile(tools, lock))
 
     findings.sort(key=lambda finding: (-SEVERITY_ORDER.get(finding.severity, 0), finding.tool, finding.code))
     if args.json:
         print(json.dumps({
-            "path": args.path,
-            "tools": len(tools),
+            "path": args.path or args.cmd or args.config or args.url,
+            "tools": total_tools,
             "problems": problems,
             "findings": [finding.to_dict() for finding in findings],
         }, indent=2))
     else:
-        print("MCP tool surface : %s" % args.path)
-        print("tools            : %d" % len(tools))
         print("findings         : %d" % len(findings))
         for finding in findings:
             print("  %-8s %-26s %-32s %s" % (
@@ -87,7 +150,9 @@ def cmd_scan_mcp(args) -> int:
 
     if args.write_lockfile:
         from .mcp_lint import schema_hashes
-        hashes = schema_hashes(tools)
+        hashes = {}
+        for _, tools in sources:
+            hashes.update(schema_hashes(tools))
         with open(args.write_lockfile, "w", encoding="utf-8", newline="\n") as handle:
             json.dump({"version": 1, "tools": hashes}, handle, indent=2, sort_keys=True)
             handle.write("\n")
@@ -214,8 +279,14 @@ def cmd_agent(args) -> int:
 
     client = ChatClient(endpoint=endpoint, model=model, api_key_env=args.api_key_env or "",
                         timeout=args.timeout)
+    defenses = args.defense or []
+    unknown = validate_defenses(defenses)
+    if unknown:
+        for problem in unknown:
+            print(problem, file=sys.stderr)
+        return EXIT_ERROR
     try:
-        run = run_agent_suite(cases, client, name=model)
+        run = run_agent_suite(cases, client, name=model, defenses=defenses)
     finally:
         if server is not None:
             server.shutdown()
@@ -228,6 +299,8 @@ def cmd_agent(args) -> int:
     summary["latency_p50_ms"] = round(run.latency(0.5), 2)
     summary["latency_p95_ms"] = round(run.latency(0.95), 2)
     summary["schema_swaps"] = sum(1 for case in cases if case.mutate_on_turn)
+    if defenses:
+        summary["defenses"] = list(defenses)
     if run.error:
         summary["endpoint_error"] = run.error
 
@@ -245,6 +318,8 @@ def cmd_agent(args) -> int:
         print("attack success   : %.1f%%" % (summary["attack_success_rate"] * 100))
         print("robustness       : %.1f%%" % (summary["robustness"] * 100))
         print("over-refusal     : %.1f%%" % (summary["over_refusal_rate"] * 100))
+        if defenses:
+            print("defenses         : %s" % ", ".join(defenses))
         if summary["by_owasp"]:
             print("by OWASP id:")
             for owasp, bucket in summary["by_owasp"].items():
@@ -391,6 +466,10 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--report", help="write the report here")
     agent.add_argument("--json-out", help="write the full result as JSON here")
     agent.add_argument("--format", choices=REPORT_FORMATS, default="markdown")
+    agent.add_argument("--defense", action="append",
+                       choices=["sanitize-schemas", "spotlighting"],
+                       help="middleware to apply before the model sees it; repeatable, and the "
+                            "ASR delta against the same suite is the measurement")
     agent.add_argument("--json", action="store_true")
     agent.add_argument("--max-asr", type=float, help="exit non-zero above this attack success rate")
     agent.set_defaults(func=cmd_agent)
@@ -423,7 +502,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_mcp = sub.add_parser("scan-mcp",
                               help="lint MCP tool definitions without calling a model")
-    scan_mcp.add_argument("path", help="tools list, tool export, or MCP config JSON")
+    scan_mcp.add_argument("path", nargs="?", help="tools list, tool export, or MCP config JSON")
+    scan_mcp.add_argument("--cmd", help="run this MCP server and read its live tool list over stdio")
+    scan_mcp.add_argument("--config", help="a client config: every server in it is introspected")
+    scan_mcp.add_argument("--url", help="a live MCP HTTP endpoint to read tools/list from")
+    scan_mcp.add_argument("--timeout", type=float, default=30.0,
+                          help="how long to wait for a live server, in seconds")
     scan_mcp.add_argument("--lockfile", help="pinned tool-hash map to detect schema drift")
     scan_mcp.add_argument("--write-lockfile", help="record the current schema hashes here")
     scan_mcp.add_argument("--fail-on", choices=["medium", "high", "critical"], default="high")

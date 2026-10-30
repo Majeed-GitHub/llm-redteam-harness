@@ -1,25 +1,64 @@
 # llm-redteam-harness
 
-A small, reproducible harness for testing how an LLM application behaves under
-prompt-injection and tool-abuse attacks. Point it at any OpenAI-compatible
-endpoint, or at the mock model it ships with, and it runs a graded suite, judges
-each response with rules, and writes a report someone else can reproduce.
+Test what an LLM agent **does**, not just what it says: prompt injection, poisoned
+MCP tool schemas, mid-session rug-pulls, and multi-turn tool chains, measured with
+published numbers instead of opinions.
 
-    python -m rt run --suite suites/owasp_llm01.jsonl --mock --report report.md
+```bash
+# 1. Lint a third-party MCP server before spending a single token
+python -m rt scan-mcp examples/poisoned_mcp.json
+
+# 2. Run the tool-poisoning suite against a deliberately poisoned agent
+python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable
+
+# 3. See what a defense buys you, on the same suite
+python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable \
+    --defense sanitize-schemas
+```
+
+The two fixtures are the evidence: **100% attack success** against
+`agent-vulnerable`, **0%** against `agent-safe`, and **25%** once schemas are
+sanitized - the survivors being the chain cases that carry no poisoned schema, which
+is the limit of that defense stated instead of hidden. CI asserts all three on every
+push.
+
+No key, no network, no third-party dependency: every number above is reproducible
+from a clone. Against a real deployment, swap `--mock` for
+`--endpoint URL --model NAME --api-key-env VAR`.
+
+## What it tests
+
+| Surface | Command | What a failure means |
+| --- | --- | --- |
+| MCP tool definitions | `rt scan-mcp` | a server's schema carries instructions, not documentation |
+| Poisoned tool metadata | `rt agent` (MCP suite) | the agent obeyed a tool description instead of the user |
+| Mid-session rug-pulls | `rt agent` + `mutate_on_turn` | the agent trusted a definition that changed after inspection |
+| Multi-turn tool chains | `rt agent` + `user_turns` | legitimate tools were chained into a privileged action |
+| Prompt injection | `rt run` | the model complied with an injected instruction |
+| A defense's value | `rt agent --defense ...` | the defense did not change the attack success rate |
+
+Reports: `--format markdown | junit | sarif | html`, grouped by OWASP id, with a
+tool-call trace per case.
 
 ## Why another one
 
 Most "LLM red team" scripts are a list of prompts and a human reading the output.
-That produces an opinion, not a measurement. This harness fixes the three things
-that make a result reproducible:
+That produces an opinion, not a measurement. This harness fixes the things that
+make a result reproducible:
 
-1. **A fixed, versioned suite.** 34 cases in JSONL: 28 attacks across five
-   categories plus 6 controls that must still be answered.
-2. **A rule judge you can read.** Refusal detection, canary leakage, and tool-call
-   emission are regular expressions in rt/judges.py. No model grades the model.
+1. **Fixed, versioned suites.** JSONL cases with expectations, canaries, tool
+   definitions and scoring rules in the case itself, so a number means the same
+   thing next month.
+2. **Judges you can read.** Refusal detection, canary leakage, forbidden calls and
+   argument patterns are regular expressions and explicit assertions in
+   `rt/judges.py` and `rt/scoring.py`. No model grades the model, and
+   business-logic invariants are declarative rather than an LLM judge - a flaky
+   judge in a security harness is worse than no judge.
 3. **Temperature 0 and an explicit model name.** The same suite against the same
    endpoint should give the same table next month; if it does not, that is a
    finding, not noise.
+4. **The fixture has to fail.** Every suite ships with an agent that is supposed to
+   fail it, and CI fails if that agent starts passing.
 
 ## Quick start, offline
 
@@ -122,15 +161,61 @@ left.
 ### Before you spend a token: scan the server
 
 ```
+# a file on disk
 python -m rt scan-mcp examples/poisoned_mcp.json
-python -m rt scan-mcp my-mcp.json --lockfile mcp.lock.json --json
-python -m rt scan-mcp my-mcp.json --write-lockfile mcp.lock.json
+
+# the server a client actually runs, over stdio
+python -m rt scan-mcp --cmd "npx -y @acme/mcp-server"
+
+# every server in a client config, or a live HTTP endpoint
+python -m rt scan-mcp --config ~/.config/claude/claude_desktop_config.json
+python -m rt scan-mcp --url http://localhost:8000/mcp
+
+# pin what you reviewed, then fail on drift
+python -m rt scan-mcp --config config.json --write-lockfile mcp.lock.json
+python -m rt scan-mcp --config config.json --lockfile mcp.lock.json
 ```
+
+A file is what someone meant to run; `tools/list` is what the model actually
+sees, and the difference is where a poisoned tool hides. The live modes perform
+the real `initialize` / `tools/list` handshake (JSON-RPC over newline-delimited
+stdio, or Streamable HTTP with JSON or event-stream replies) and run the same
+checks on the answer. The child process is always terminated, stderr is drained,
+and every read is bounded by `--timeout`.
 
 Static checks: imperative text in a description or a parameter default, hidden
 unicode (with the decoded payload printed), a tool that redirects a sibling's
 calls, an open schema next to an exec-like argument, and SHA-256 schema drift
 against a pinned lockfile. No model, no key, no tokens.
+
+## Measure a defense, not just a failure
+
+A red-team report that stops at "the agent failed" leaves the reader with no next
+step. The same suite runs with middleware in front of the model, and the attack
+success rate is the measurement:
+
+    python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable
+    # attack success   : 100.0%
+
+    python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable \
+        --defense sanitize-schemas
+    # attack success   : 25.0%
+
+- **sanitize-schemas** strips hidden characters from tool definitions and removes
+  any sentence that talks to the model instead of describing the tool. When every
+  sentence is an instruction, the description becomes a factual stub built from
+  the tool name, because an empty description breaks the feature it protects.
+- **spotlighting** wraps tool output in `<untrusted_tool_output>` and adds one
+  system message stating that content inside those tags is data, never an
+  instruction.
+
+The honest limits, measured rather than implied: sanitizing removes the attack
+surface of a *description*, so the three survivors in the table above are the chain
+cases that never carried a poisoned description - which is why they stay in the
+suite. Spotlighting addresses a model that reads tool output as guidance; the
+bundled fixtures return data rather than instructions, so that defense cannot be
+measured offline and no number is claimed for it here. A live model is needed, and
+that run is yours to take with your key.
 
 ## Report formats
 

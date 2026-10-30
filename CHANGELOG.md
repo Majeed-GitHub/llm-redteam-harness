@@ -2,6 +2,40 @@
 
 All notable changes. One line per change, in the commit that made it.
 
+## 0.6.0 - defenses, live servers, and the value of a fix
+
+The previous release showed what fails. This one answers "how do I fix it, and
+does the fix work", without asking anyone to trust a claim.
+
+- rt/defense.py plus `rt agent --defense`: runtime middleware measured on the same
+  suite. `sanitize-schemas` strips hidden characters and removes instruction
+  sentences from tool definitions; `spotlighting` wraps tool output in an
+  untrusted block with one system notice. On the shipped fixtures, attack success
+  goes 100% -> 25% with sanitizing; the three survivors are the chain cases that
+  carry no poisoned description, which is the limit of that defense and the reason
+  they stay in the suite.
+- `mock_return_by_arg`: a tool can answer differently depending on what it was
+  sent, so a multi-turn case only succeeds when the agent really moved a value
+  from one tool into the next. A guessed name now gets "unknown employee" instead
+  of the gate code, which turns a data-flow claim into a test.
+- suites/mcp_schema.jsonl gained MCP-10, a stateful chain using that mechanism.
+- rt/mcp_live.py plus `rt scan-mcp --cmd/--config/--url`: read tool schemas from a
+  live MCP server (JSON-RPC over stdio, or Streamable HTTP) and lint the response,
+  so the static check runs against what a developer's client actually sees.
+- .github/workflows/release.yml: on a `v*` tag, build the wheel and sdist, run
+  `twine check`, install the built wheel and run the suite against it (testing the
+  package, not the tree), attach report.html / report.sarif / mcp-scan.json to the
+  release, and publish to PyPI through Trusted Publishing when a publisher exists.
+  The publish job is skipped with a notice rather than failed when none is
+  configured, so the artifacts still ship.
+- README now opens with the two-command quickstart and the defense delta.
+- Version honesty: package and pyproject both say 0.6.0, and tests/test_release.py
+  fails if they ever disagree with the changelog.
+
+Not claimed: no PyPI publication yet (needs a trusted publisher or a token on the
+owner's account), no live-model numbers (the fixtures are the evidence), no
+recorded demo, no hosted scorecard.
+
 ## 0.5.0 - tool poisoning, MCP schemas, and the trajectory
 
 The harness could only test what a model said. Agent attacks are what a model

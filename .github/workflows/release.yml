@@ -1,0 +1,104 @@
+name: Release
+
+# A release is: a green build, a checked package, and artifacts a reader can open.
+# Publishing uses PyPI Trusted Publishing (OIDC), so no token lives in this repo.
+# Until a trusted publisher is configured for this repository on PyPI, the
+# publish job is skipped instead of failing the release - the artifacts and the
+# GitHub release are still produced.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install --quiet build twine
+      - name: Build the wheel and sdist
+        run: python -m build
+      - name: Check the metadata a user will see
+        run: python -m twine check dist/*
+      - name: Test the package as installed, not as imported from the tree
+        run: |
+          python -m pip install --force-reinstall --quiet dist/*.whl
+          cd /tmp
+          llm-redteam-harness --version
+          llm-redteam-harness agent --suite "$GITHUB_WORKSPACE/suites/mcp_schema.jsonl" \
+            --mock --mock-mode agent-safe --max-asr 0.0
+      - name: Generate the reports attached to the release
+        run: |
+          python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe \
+            --format html --report report.html
+          python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe \
+            --format sarif --report report.sarif
+          python -m rt scan-mcp examples/poisoned_mcp.json --json > mcp-scan.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            report.html
+            report.sarif
+            mcp-scan.json
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Does a trusted publisher exist for this repository?
+        id: trusted
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          # PyPI answers 404 for an unknown project, which is the normal state
+          # before the first upload. Publish only when the project is visible to
+          # ID-token authentication; otherwise skip loudly.
+          name=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['name'])" 2>/dev/null || echo llm-redteam-harness)
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/$name/json")
+          echo "project=$name status=$code"
+          if [ "$code" = "200" ]; then echo "publish=true" >> "$GITHUB_OUTPUT"; else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Publish to PyPI (Trusted Publishing)
+        if: steps.trusted.outputs.publish == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Explain the skip
+        if: steps.trusted.outputs.publish != 'true'
+        run: |
+          echo "::notice::Published artifacts were built and are attached to the release."
+          echo "PyPI publish skipped: no project exists under this name yet, or no trusted"
+          echo "publisher is configured. Set one up at https://pypi.org/manage/account/publishing/"
+          echo "and the next tag publishes automatically."
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: reports
+          path: reports/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            reports/report.html
+            reports/report.sarif
+            reports/mcp-scan.json
+          generate_release_notes: false
