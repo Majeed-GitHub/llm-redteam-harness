@@ -159,6 +159,44 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(turn.content, "hi")
 
 
+class TestSuiteFormats(unittest.TestCase):
+    """JSONL is native; JSON and YAML have to behave the same way, or say why not."""
+
+    def test_json_suite_loads(self):
+        import json
+        import tempfile
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "suite.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"cases": [{"id": "J-1", "category": "c", "prompt": "p",
+                                  "expectation": "refuse"}]}, handle)
+        cases = load_cases(path)
+        self.assertEqual([case.id for case in cases], ["J-1"])
+
+    def test_yaml_suite_loads_or_explains_why_it_cannot(self):
+        import tempfile
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "suite.yaml")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("cases:\n  - id: Y-1\n    category: c\n    prompt: p\n    expectation: refuse\n")
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            # The core is standard-library only, so a missing PyYAML must be a
+            # clear instruction rather than a traceback or a silent empty suite.
+            with self.assertRaises(ValueError) as context:
+                load_cases(path)
+            self.assertIn("pip install pyyaml", str(context.exception))
+            return
+        cases = load_cases(path)
+        self.assertEqual([case.id for case in cases], ["Y-1"])
+
+    def test_a_missing_suite_is_a_clear_error(self):
+        with self.assertRaises(ValueError) as context:
+            load_cases(os.path.join(ROOT, "suites", "does-not-exist.jsonl"))
+        self.assertIn("no such suite", str(context.exception))
+
+
 class TestSuiteFiles(unittest.TestCase):
     def test_the_mcp_suite_loads_and_validates(self):
         cases = load_cases(os.path.join(ROOT, "suites", "mcp_schema.jsonl"))
