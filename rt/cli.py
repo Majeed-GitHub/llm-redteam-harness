@@ -12,13 +12,19 @@ from .cases import load_cases, summarise_cases, validate_cases
 from .client import ChatClient, ClientError
 from .judges import judge, summarize
 from .mock import serve
-from .report import render_markdown, write_json
+from .report import render_junit, render_markdown, write_json
 from .plugin import plugin_manifest, plugin_run
 from .runner import compare, render_comparison
 
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ERROR = 2
+
+
+def _write_text(path: str, text: str) -> None:
+    """Write a report with explicit UTF-8 and LF, so it is the same file on every OS."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
 
 
 def cmd_validate(args) -> int:
@@ -72,7 +78,12 @@ def cmd_run(args) -> int:
     summary["suite"] = args.suite
     summary["model"] = model
 
-    if args.json:
+    junit = render_junit(summary, verdicts, args.suite, model) if args.format == "junit" else ""
+    if junit and not args.report:
+        # With no report path the XML is the machine-readable output, so it goes
+        # to stdout alone: a CI job redirects it into the file it publishes.
+        print(junit)
+    elif args.json:
         print(json.dumps(summary, indent=2))
     else:
         print("suite            : %s" % args.suite)
@@ -92,9 +103,9 @@ def cmd_run(args) -> int:
                 print("  %-10s %s" % (failure["case_id"], failure["reason"]))
 
     if args.report:
-        with open(args.report, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(render_markdown(summary, verdicts, args.suite, model))
-        print("report written   : %s" % args.report)
+        _write_text(args.report,
+                   junit if junit else render_markdown(summary, verdicts, args.suite, model))
+        print("%s written   : %s" % ("junit" if junit else "report", args.report))
     if args.json_out:
         write_json(args.json_out, summary, verdicts)
         print("json written     : %s" % args.json_out)
@@ -178,8 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mock", action="store_true", help="run against the bundled mock model")
     run.add_argument("--mock-mode", choices=["good", "leaky"], default="good")
     run.add_argument("--timeout", type=float, default=120.0)
-    run.add_argument("--report", help="write a Markdown report here")
+    run.add_argument("--report", help="write the report here, Markdown unless --format junit")
     run.add_argument("--json-out", help="write the full result as JSON here")
+    run.add_argument("--format", choices=["markdown", "junit"], default="markdown",
+                     help="format of the --report file: markdown for a person (the default), "
+                          "junit for a CI system that renders test results")
     run.add_argument("--json", action="store_true")
     run.add_argument("--max-asr", type=float, help="exit non-zero above this attack success rate")
     run.set_defaults(func=cmd_run)

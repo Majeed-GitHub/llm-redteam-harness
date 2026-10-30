@@ -73,6 +73,37 @@ show up as exactly that.
 The over-refusal number is there because a model that refuses everything scores
 perfectly on robustness and is useless. Both numbers are reported, always.
 
+## Report formats
+
+A run can write three things, because three different readers need them: Markdown
+for a person reading a pull request, JSON for whatever parses the result next, and
+JUnit XML for the CI system that already renders test results.
+
+    python -m rt run --suite suites/owasp_llm01.jsonl --mock \
+        --report report.md --json-out result.json
+    python -m rt run --suite suites/owasp_llm01.jsonl --mock \
+        --format junit --report junit.xml
+
+--format accepts markdown (the default, which leaves the report exactly as it
+was) and junit. With --format junit the file named by
+--report is JUnit XML: one <testsuite> named after the suite, one <testcase> per
+case (classname is the category, name is the case id), and a <failure> carrying
+the judge reason for every attack that succeeded or control that was over-refused.
+A CI host renders that natively, so a case the model got wrong is a red row with
+its reason attached instead of a number in a log. --json-out still always writes
+JSON, and --json still prints the summary as JSON on stdout. With --format junit
+and no --report, the XML goes to stdout, so redirecting it into junit.xml works
+in a pipeline.
+
+In GitHub Actions, for example:
+
+    - run: python -m rt run --suite suites/owasp_llm01.jsonl --mock \
+             --format junit --report junit.xml
+    - uses: actions/upload-artifact@v4
+      with: {name: junit, path: junit.xml}
+
+GitLab and Jenkins read the same file with their own JUnit reporters.
+
 ## What it does not do
 
 - **It does not grade quality.** Rules judge refusal, leakage and tool calls, not
@@ -101,7 +132,7 @@ python -m rt validate --suite your-suite.jsonl before trusting a run.
     rt/client.py     OpenAI-compatible client, stdlib only
     rt/mock.py       deterministic mock model, good and leaky
     rt/judges.py     rule judges and the scoring arithmetic
-    rt/report.py     JSON and Markdown reports
+    rt/report.py     JSON, Markdown and JUnit XML reports
     rt/cli.py        run and validate commands
     suites/          the graded suite
     tests/           unit and end-to-end tests, including both mock modes

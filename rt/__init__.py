@@ -15,9 +15,9 @@ temperature, same judge: the number means the same thing next month.
 from .cases import Case, load_cases, validate_cases
 from .client import ChatClient, ClientError
 from .judges import Verdict, judge, summarize
-from .report import render_markdown, write_json
+from .report import render_junit, render_markdown, write_json
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Case",
@@ -26,6 +26,7 @@ __all__ = [
     "Verdict",
     "judge",
     "load_cases",
+    "render_junit",
     "render_markdown",
     "summarize",
     "validate_cases",
