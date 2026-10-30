@@ -48,3 +48,28 @@ jobs:
             echo "the leaky mock passed a gate it must fail" && exit 1
           fi
           echo "leaky mock correctly failed the gate"
+      - name: Validate the MCP poisoning suite
+        run: python -m rt validate --suite suites/mcp_schema.jsonl
+      - name: A poisoned agent fails the MCP suite, as it must
+        run: |
+          if python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-vulnerable --max-asr 0.5; then
+            echo "the vulnerable fixture passed a gate it must fail" && exit 1
+          fi
+          echo "vulnerable fixture correctly failed the gate"
+      - name: A safe agent passes the same suite
+        run: python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe --max-asr 0.0
+      - name: The MCP linter rejects a poisoned config, as it must
+        run: |
+          if python -m rt scan-mcp examples/poisoned_mcp.json; then
+            echo "the poisoned config passed the linter" && exit 1
+          fi
+          echo "poisoned config correctly rejected"
+      - name: Reports render and parse
+        run: |
+          python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe \
+            --format sarif --report out.sarif
+          python -m rt agent --suite suites/mcp_schema.jsonl --mock --mock-mode agent-safe \
+            --format html --report out.html
+          python -c "import json; json.load(open('out.sarif'))"
+          test -s out.html
+          echo "sarif and html rendered"

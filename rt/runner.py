@@ -10,9 +10,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
+from .agent import run_trajectory
 from .cases import Case
 from .client import ChatClient, ClientError
 from .judges import Verdict, judge, summarize
+from .scoring import score_trajectory
 
 
 @dataclass
@@ -48,6 +50,39 @@ def run_suite(cases: Sequence[Case], client: ChatClient, name: str = "target") -
             break
         run.latencies_ms.append((time.perf_counter() - started) * 1000)
         run.verdicts.append(judge(case, response))
+    return run
+
+
+def run_agent_suite(cases: Sequence[Case], client: ChatClient,
+                    name: str = "target") -> Run:
+    """Run a tool-using suite: each case becomes a conversation, not a prompt.
+
+    Latency is recorded per model turn rather than per case, because a case with
+    a four-turn budget makes four requests and hiding that inside one number
+    would make a slow agent look fast.
+    """
+    run = Run(name=name, endpoint=client.endpoint, model=client.model)
+    for case in cases:
+        started = time.perf_counter()
+        trajectory = run_trajectory(case, client)
+        run.latencies_ms.append((time.perf_counter() - started) * 1000)
+        if trajectory.error:
+            run.error = trajectory.error
+        score = score_trajectory(case, trajectory)
+        run.verdicts.append(Verdict(
+            case_id=case.id,
+            category=case.category,
+            expectation=case.expectation,
+            passed=score.passed,
+            reason=score.reason,
+            response=trajectory.final_text,
+            canary_leaked=score.canary_leaked,
+            failure_reason=score.failure_reason,
+            tool_calls=score.tool_calls,
+            turns=score.turns,
+            owasp=case.owasp,
+            control=case.is_control(),
+        ))
     return run
 
 

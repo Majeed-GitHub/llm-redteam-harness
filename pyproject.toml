@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-redteam-harness"
+version = "0.5.0"
+description = "Reproducible LLM red-team suites: prompt injection, RAG poisoning, MCP tool-schema attacks and multi-turn tool chains, measured with published numbers"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Shaik Majeed", email = "majeedlearnings@gmail.com" }]
+keywords = ["llm", "security", "red-team", "prompt-injection", "mcp", "ai-security", "evaluation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.scripts]
+llm-redteam-harness = "rt.cli:main"
+redteam = "rt.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Majeed-GitHub/llm-redteam-harness"
+Issues = "https://github.com/Majeed-GitHub/llm-redteam-harness/issues"
+
+[tool.setuptools]
+packages = ["rt"]

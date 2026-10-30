@@ -1,0 +1,104 @@
+name: LLM red-team
+description: Run a red-team suite against an agent or MCP deployment and fail the build above an attack success rate
+author: Shaik Majeed
+branding:
+  icon: crosshair
+  color: purple
+
+inputs:
+  suite:
+    description: Suite file to run
+    required: false
+    default: suites/mcp_schema.jsonl
+  mode:
+    description: "agent (tool-using suite) or run (single prompts)"
+    required: false
+    default: agent
+  endpoint:
+    description: Base URL of an OpenAI-compatible API; empty means the bundled fixtures
+    required: false
+    default: ""
+  model:
+    description: Model name to send
+    required: false
+    default: ""
+  api-key-env:
+    description: Name of the environment variable holding the API key
+    required: false
+    default: OPENAI_API_KEY
+  mock-mode:
+    description: "Fixture for offline runs: agent-safe or agent-vulnerable"
+    required: false
+    default: agent-safe
+  max-asr:
+    description: Fail when the attack success rate exceeds this (0.0 is strict)
+    required: false
+    default: "0.0"
+  sarif:
+    description: Write SARIF here for upload-sarif; empty writes Markdown
+    required: false
+    default: ""
+
+outputs:
+  sarif-file:
+    description: Path of the SARIF log when the sarif input was set
+    value: ${{ steps.scan.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install the harness from this repository
+      shell: bash
+      run: python -m pip install --quiet "$GITHUB_ACTION_PATH"
+    - name: Validate the suite before spending tokens
+      shell: bash
+      run: python -m rt validate --suite "${{ inputs.suite }}"
+    - name: Scan the MCP tool surface statically
+      shell: bash
+      run: |
+        if [ -f examples/poisoned_mcp.json ]; then
+          python -m rt scan-mcp examples/poisoned_mcp.json --json > mcp-scan.json || true
+        fi
+    - name: Run the suite
+      id: scan
+      shell: bash
+      env:
+        INPUT_SUITE: ${{ inputs.suite }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_KEY_ENV: ${{ inputs.api-key-env }}
+        INPUT_MOCK_MODE: ${{ inputs.mock-mode }}
+        INPUT_MAX_ASR: ${{ inputs.max-asr }}
+        INPUT_SARIF: ${{ inputs.sarif }}
+      run: |
+        set -euo pipefail
+        target=()
+        if [ -n "$INPUT_ENDPOINT" ]; then
+          target=(--endpoint "$INPUT_ENDPOINT" --model "$INPUT_MODEL" --api-key-env "$INPUT_KEY_ENV")
+        else
+          target=(--mock)
+          if [ "$INPUT_MODE" = "agent" ]; then
+            target+=(--mock-mode "$INPUT_MOCK_MODE")
+          else
+            target+=(--mock-mode good)
+          fi
+        fi
+        format=()
+        if [ -n "$INPUT_SARIF" ]; then
+          format=(--format sarif --report "$INPUT_SARIF")
+        fi
+        # A failing gate must still leave a report behind for the reviewer.
+        set +e
+        python -m rt "$INPUT_MODE" --suite "$INPUT_SUITE" "${target[@]}" \
+          "${format[@]}" --max-asr "$INPUT_MAX_ASR"
+        status=$?
+        set -e
+        if [ -n "$INPUT_SARIF" ]; then
+          echo "sarif-file=$INPUT_SARIF" >> "$GITHUB_OUTPUT"
+        fi
+        exit $status
